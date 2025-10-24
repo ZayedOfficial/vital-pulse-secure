@@ -1,1 +1,4 @@
 project_id = "jckirnggneyksybxkrsh"
+
+[functions.recommend-doctor]
+verify_jwt = false

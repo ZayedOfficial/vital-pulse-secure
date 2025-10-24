@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -7,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { Heart, Loader2 } from 'lucide-react';
-import { UserRole } from '@/context/AuthContext';
+import type { UserRole } from '@/context/AuthContext';
 
 export default function Register() {
   const [name, setName] = useState('');
@@ -16,17 +17,22 @@ export default function Register() {
   const [role, setRole] = useState<UserRole>('patient');
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
+  const { signup } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
-    // Mock registration - replace with actual API call
-    setTimeout(() => {
+    try {
+      await signup(email, password, name, role);
       toast.success('Registration successful! Please login.');
       navigate('/login');
+    } catch (error: any) {
+      console.error('Registration error:', error);
+      toast.error(error.message || 'Registration failed. Please try again.');
+    } finally {
       setIsLoading(false);
-    }, 1000);
+    }
   };
 
   return (

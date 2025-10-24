@@ -22,8 +22,9 @@ export default function Login() {
     try {
       await login(email, password);
       toast.success('Login successful!');
-    } catch (error) {
-      toast.error('Invalid credentials. Please try again.');
+    } catch (error: any) {
+      console.error('Login error:', error);
+      toast.error(error.message || 'Invalid credentials. Please try again.');
     } finally {
       setIsLoading(false);
     }

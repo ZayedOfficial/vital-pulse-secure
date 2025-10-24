@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { supabase } from '@/integrations/supabase/client';
+import type { User as SupabaseUser, Session } from '@supabase/supabase-js';
 
 export type UserRole = 'admin' | 'doctor' | 'patient';
 
@@ -13,7 +15,9 @@ export interface User {
 
 interface AuthContextType {
   user: User | null;
+  session: Session | null;
   login: (email: string, password: string) => Promise<void>;
+  signup: (email: string, password: string, fullName: string, role: UserRole) => Promise<void>;
   logout: () => void;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -23,46 +27,83 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Check for stored token and user
-    const storedToken = localStorage.getItem('token');
-    const storedUser = localStorage.getItem('user');
-    
-    if (storedToken && storedUser) {
-      try {
-        setUser(JSON.parse(storedUser));
-      } catch (error) {
-        console.error('Error parsing stored user:', error);
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
+    // Set up auth state listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log('Auth state changed:', event, session?.user?.id);
+        setSession(session);
+        
+        if (session?.user) {
+          // Fetch user role and profile
+          setTimeout(async () => {
+            try {
+              const { data: userRole } = await supabase
+                .from('user_roles')
+                .select('role')
+                .eq('user_id', session.user.id)
+                .single();
+
+              const { data: profile } = await supabase
+                .from('profiles')
+                .select('full_name, avatar_url')
+                .eq('id', session.user.id)
+                .single();
+
+              if (userRole && profile) {
+                setUser({
+                  id: session.user.id,
+                  name: profile.full_name,
+                  email: session.user.email || '',
+                  role: userRole.role as UserRole,
+                  avatar: profile.avatar_url,
+                });
+              }
+            } catch (error) {
+              console.error('Error fetching user data:', error);
+            }
+          }, 0);
+        } else {
+          setUser(null);
+        }
       }
-    }
-    setIsLoading(false);
+    );
+
+    // Check for existing session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setIsLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const login = async (email: string, password: string) => {
-    // Mock authentication - replace with actual API call
-    const mockUsers = [
-      { id: '1', name: 'Dr. Admin', email: 'admin@hospital.com', role: 'admin' as UserRole, password: 'admin123' },
-      { id: '2', name: 'Dr. Sarah Johnson', email: 'doctor@hospital.com', role: 'doctor' as UserRole, password: 'doctor123' },
-      { id: '3', name: 'John Patient', email: 'patient@hospital.com', role: 'patient' as UserRole, password: 'patient123' },
-    ];
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
-    const foundUser = mockUsers.find(u => u.email === email && u.password === password);
-    
-    if (foundUser) {
-      const { password: _, ...userWithoutPassword } = foundUser;
-      const token = 'mock-jwt-token-' + foundUser.id;
-      
-      localStorage.setItem('token', token);
-      localStorage.setItem('user', JSON.stringify(userWithoutPassword));
-      setUser(userWithoutPassword);
+    if (error) throw error;
 
-      // Role-based routing
-      switch (foundUser.role) {
+    if (data.user) {
+      // Fetch user role
+      const { data: userRole } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', data.user.id)
+        .single();
+
+      if (!userRole) {
+        throw new Error('User role not found');
+      }
+
+      // Navigate based on role
+      switch (userRole.role) {
         case 'admin':
           navigate('/admin');
           break;
@@ -73,20 +114,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           navigate('/patient');
           break;
       }
-    } else {
-      throw new Error('Invalid credentials');
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+  const signup = async (email: string, password: string, fullName: string, role: UserRole) => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          full_name: fullName,
+        },
+        emailRedirectTo: `${window.location.origin}/`,
+      },
+    });
+
+    if (error) throw error;
+
+    if (data.user) {
+      // Create user role
+      const { error: roleError } = await supabase
+        .from('user_roles')
+        .insert({ user_id: data.user.id, role });
+
+      if (roleError) {
+        console.error('Error creating user role:', roleError);
+        throw roleError;
+      }
+
+      // Create patient or doctor record based on role
+      if (role === 'patient') {
+        const { error: patientError } = await supabase
+          .from('patients')
+          .insert({ user_id: data.user.id });
+
+        if (patientError) {
+          console.error('Error creating patient record:', patientError);
+        }
+      } else if (role === 'doctor') {
+        // Default specialization - can be updated later
+        const { error: doctorError } = await supabase
+          .from('doctors')
+          .insert({ 
+            user_id: data.user.id,
+            specialization: 'general_medicine',
+            experience_years: 0
+          });
+
+        if (doctorError) {
+          console.error('Error creating doctor record:', doctorError);
+        }
+      }
+    }
+  };
+
+  const logout = async () => {
+    await supabase.auth.signOut();
     setUser(null);
+    setSession(null);
     navigate('/login');
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, isLoading }}>
+    <AuthContext.Provider value={{ user, session, login, signup, logout, isAuthenticated: !!user, isLoading }}>
       {children}
     </AuthContext.Provider>
   );
